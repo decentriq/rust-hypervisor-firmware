@@ -33,7 +33,7 @@ use r_efi::{
     },
 };
 
-use crate::boot;
+use crate::{boot, InMemoryVirtioTransport};
 use crate::rtc;
 
 mod alloc;
@@ -288,6 +288,12 @@ pub extern "win64" fn convert_pointer(_: usize, _: *mut *mut c_void) -> Status {
     Status::UNSUPPORTED
 }
 
+fn convert_str(char16str: *const Char16, buffer: &mut [u8]) -> &str {
+    crate::common::ucs2_to_ascii(char16str, buffer);
+    let len = crate::common::ucs2_as_ascii_length(char16str);
+    unsafe { core::str::from_utf8_unchecked(&buffer[0..len]) }
+}
+
 pub extern "win64" fn get_variable(
     variable_name: *mut Char16,
     vendor_guid: *mut Guid,
@@ -295,6 +301,9 @@ pub extern "win64" fn get_variable(
     data_size: *mut usize,
     data: *mut c_void,
 ) -> Status {
+    let mut buffer = [0; 256];
+    log!("get_variable {}", convert_str(variable_name, &mut buffer));
+
     if cfg!(feature = "efi-var") {
         VARIABLES
             .borrow_mut()
@@ -319,6 +328,8 @@ pub extern "win64" fn set_variable(
     data_size: usize,
     data: *mut c_void,
 ) -> Status {
+    let mut buffer = [0; 256];
+    log!("set_variable {}", convert_str(variable_name, &mut buffer));
     if cfg!(feature = "efi-var") {
         VARIABLES
             .borrow_mut()
@@ -948,6 +959,7 @@ fn init_heap_allocator(size: usize) {
         0,
     );
     assert!(status == Status::SUCCESS);
+    log!("Heap starts at {:p}", heap_start as *const u8);
     unsafe {
         HEAP_ALLOCATOR.lock().init(heap_start as usize, size);
     }
@@ -1042,6 +1054,7 @@ pub fn efi_exec(
     fs: &crate::fat::Filesystem,
     block: *const crate::block::VirtioBlockDevice,
 ) {
+    log!("efi_exec");
     let vendor_data = 0u32;
     let acpi_rsdp_ptr = info.rsdp_addr();
 
@@ -1100,5 +1113,11 @@ pub fn efi_exec(
     let ptr = address as *const ();
     let code: extern "win64" fn(Handle, *mut efi::SystemTable) -> Status =
         unsafe { core::mem::transmute(ptr) };
+    // log!("Disabling fs");
+    // unsafe {
+    //     (&(&*block).transport as &'static dyn core::any::Any).downcast_ref::<InMemoryVirtioTransport>().unwrap().disable();
+    // }
+
+    log!("Jumping into image at address {:p}", ptr);
     (code)((image as *const _) as Handle, &mut *st);
 }

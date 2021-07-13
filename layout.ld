@@ -42,6 +42,20 @@ SECTIONS
   /* ram32.s only maps the first 2 MiB, and that must include the stack. */
   ASSERT((. <= 2M), "Stack overflows initial identity-mapped memory region")
 
+  . = 2M;
+  magic_debug = .;
+  . += 1K;
+
+  /* We place the Unified Kernel Image *below* the stack. Therefore we must
+     not overflow the stack before relocating the image!
+     Note also that we align at 2M, this is because we're using huge pages
+     and want to mark the UKI range read-only
+  */
+  .efidisk : ALIGN(2M) { *(.efidisk) }
+
+  . = ALIGN(2M);
+  unused_start = .;
+
   /* Strip symbols from the output binary (comment out to get symbols) */
   /DISCARD/ : {
     *(.symtab)

@@ -20,48 +20,48 @@ const QUEUE_SIZE: usize = 16;
 
 #[repr(C)]
 #[repr(align(16))]
-#[derive(Default)]
+#[derive(Default, Debug)]
 /// A virtio qeueue entry descriptor
-struct Desc {
-    addr: u64,
-    length: u32,
-    flags: u16,
-    next: u16,
+pub struct Desc {
+    pub addr: u64,
+    pub length: u32,
+    pub flags: u16,
+    pub next: u16,
 }
 
 #[repr(C)]
 #[repr(align(2))]
-#[derive(Default)]
+#[derive(Default, Debug)]
 /// The virtio available ring
-struct AvailRing {
-    flags: u16,
-    idx: u16,
-    ring: [u16; QUEUE_SIZE],
+pub struct AvailRing {
+    pub flags: u16,
+    pub idx: u16,
+    pub ring: [u16; QUEUE_SIZE],
 }
 
 #[repr(C)]
 #[repr(align(4))]
-#[derive(Default)]
+#[derive(Default, Debug)]
 /// The virtio used ring
-struct UsedRing {
-    flags: u16,
-    idx: u16,
-    ring: [UsedElem; QUEUE_SIZE],
+pub struct UsedRing {
+    pub flags: u16,
+    pub idx: u16,
+    pub ring: [UsedElem; QUEUE_SIZE],
 }
 
 #[repr(C)]
-#[derive(Default)]
+#[derive(Default, Debug)]
 /// A single element in the used ring
-struct UsedElem {
-    id: u32,
-    len: u32,
+pub struct UsedElem {
+    pub id: u32,
+    pub len: u32,
 }
 
 #[repr(C)]
 #[repr(align(64))]
 /// Device driver for virtio block over any transport
 pub struct VirtioBlockDevice<'a> {
-    transport: &'a mut dyn VirtioTransport,
+    pub transport: &'a mut dyn VirtioTransport,
     state: RefCell<DriverState>,
 }
 
@@ -82,11 +82,12 @@ pub enum Error {
 }
 
 #[repr(C)]
+#[derive(Debug)]
 /// Header used for virtio block requests
-struct BlockRequestHeader {
-    request: u32,
-    reserved: u32,
-    sector: u64,
+pub struct BlockRequestHeader {
+    pub request: u32,
+    pub reserved: u32,
+    pub sector: u64,
 }
 
 #[repr(C)]
@@ -109,7 +110,7 @@ pub trait SectorWrite {
 }
 
 #[derive(PartialEq, Copy, Clone)]
-enum RequestType {
+pub enum RequestType {
     Read = 0,
     Write = 1,
     Flush = 4,
