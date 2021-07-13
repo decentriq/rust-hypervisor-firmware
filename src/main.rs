@@ -21,11 +21,16 @@
 #![cfg_attr(not(feature = "log-serial"), allow(unused_variables, unused_imports))]
 
 use core::panic::PanicInfo;
+use core::fmt::Write;
 
 use x86_64::{
     instructions::hlt,
     registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags},
 };
+use sha2::Digest;
+use crate::virtio::Error;
+use bitflags::_core::cell::RefCell;
+use crate::block::{AvailRing, UsedRing, Desc, BlockRequestHeader, RequestType};
 
 #[macro_use]
 mod serial;
@@ -172,18 +177,173 @@ pub extern "C" fn rust64_start() -> ! {
 fn main(info: &dyn boot::Info) -> ! {
     log!("\nBooting with {}", info.name());
 
-    pci::print_bus();
+    // Mark UKI range read-only
 
-    pci::with_devices(
-        VIRTIO_PCI_VENDOR_ID,
-        VIRTIO_PCI_BLOCK_DEVICE_ID,
-        |pci_device| {
-            let mut pci_transport = pci::VirtioPciTransport::new(pci_device);
-            block::VirtioBlockDevice::new(&mut pci_transport);
-            let mut device = block::VirtioBlockDevice::new(&mut pci_transport);
-            boot_from_device(&mut device, info)
-        },
-    );
 
-    panic!("Unable to boot from any virtio-blk device")
+    let uki_ram_slice = unsafe {
+        let start_ptr: *const u8 = &_binary_uki_start;
+        let end_ptr: *const u8 = &_binary_uki_end;
+        let size = end_ptr.offset_from(start_ptr);
+        core::slice::from_raw_parts(start_ptr, size as usize)
+    };
+
+    paging::mark_read_only(uki_ram_slice);
+
+    log!("Unified kernel image at {:p}: {}", uki_ram_slice.as_ptr(), uki_ram_slice.len());
+
+    // let uki_rom_slice = unsafe {
+    //     let start_ptr: * const u8 = &rom_uki_start;
+    //     let size = uki_ram_slice.len();
+    //     core::slice::from_raw_parts(start_ptr, size as usize)
+    // };
+    //
+    // unsafe { log!("data location: {:p}", &rom_data_start); }
+    // unsafe { log!("UKI ROM location: {:p}", &rom_uki_start); }
+    // unsafe { log!("pad start: {:p}", &pad_start); }
+
+    let mut hasher = sha2::Sha256::default();
+    hasher.update(&uki_ram_slice[0..]);
+    log!("sha256 of RAM uki: {:02X?}", hasher.finalize());
+
+    //
+    // let mut hasher = sha2::Sha256::default();
+    // hasher.update(&uki_rom_slice[0..1024]);
+    // log!("sha256 of ROM uki: {:02X?}", hasher.finalize());
+
+    let mut in_memory_transport = InMemoryVirtioTransport::new(uki_ram_slice);
+    let mut device = block::VirtioBlockDevice::new(&mut in_memory_transport);
+    let result = boot_from_device(&mut device, info);
+
+    panic!("Unable to boot from UKI, result {}", result)
+}
+
+extern "C" {
+    pub static _binary_uki_start: u8;
+    pub static _binary_uki_end: u8;
+}
+
+struct InMemoryVirtioTransport<'a> {
+    data: &'a [u8],
+    state: RefCell<InMemoryVirtioTransportState>,
+}
+
+struct InMemoryVirtioTransportState {
+    status: u32,
+    features: u64,
+    descriptors: Option<* const Desc>,
+    avail_ring: Option<* const AvailRing>,
+    used_ring: Option<* mut UsedRing>,
+}
+
+impl Default for InMemoryVirtioTransportState {
+    fn default() -> Self {
+        Self {
+            status: 0,
+            features: 1 << 32,
+            descriptors: None,
+            avail_ring: None,
+            used_ring: None,
+        }
+    }
+}
+
+impl <'a> InMemoryVirtioTransport<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        InMemoryVirtioTransport {
+            data,
+            state: RefCell::new(InMemoryVirtioTransportState::default()),
+        }
+    }
+
+    fn sector_count(&self) -> usize {
+        self.data.len() / 512 + if self.data.len() % 512 > 0 { 1 } else { 0 }
+    }
+}
+
+impl <'a> crate::virtio::VirtioTransport for InMemoryVirtioTransport<'a> {
+    fn init(&mut self, _device_type: u32) -> Result<(), Error> {
+        log!("imvt init");
+        Ok(())
+    }
+
+    fn get_status(&self) -> u32 {
+        self.state.borrow().status
+    }
+
+    fn set_status(&self, status: u32) {
+        self.state.borrow_mut().status = status;
+    }
+
+    fn add_status(&self, status: u32) {
+        self.state.borrow_mut().status |= status;
+    }
+
+    fn reset(&self) {
+        *self.state.borrow_mut() = InMemoryVirtioTransportState::default();
+    }
+
+    fn get_features(&self) -> u64 {
+        self.state.borrow().features
+    }
+
+    fn set_features(&self, features: u64) {
+        self.state.borrow_mut().features = features;
+    }
+
+    fn set_queue(&self, queue: u16) {
+        log!("set_queue {}", queue);
+    }
+
+    fn get_queue_max_size(&self) -> u16 {
+        16
+    }
+
+    fn set_queue_size(&self, queue_size: u16) {
+        log!("set_queue_size {}", queue_size);
+    }
+
+    fn set_descriptors_address(&self, address: u64) {
+        log!("set_descriptors_address {:x}", address);
+        self.state.borrow_mut().descriptors.insert(address as * const Desc);
+    }
+
+    fn set_avail_ring(&self, address: u64) {
+        log!("set_avail_ring {:x}", address);
+        self.state.borrow_mut().avail_ring.insert(address as * const AvailRing);
+    }
+
+    fn set_used_ring(&self, address: u64) {
+        log!("set_used_ring {:x}", address);
+        self.state.borrow_mut().used_ring.insert(address as * mut UsedRing);
+    }
+
+    fn set_queue_enable(&self) {
+        log!("set_queue_enable");
+    }
+
+    fn notify_queue(&self, queue: u16) {
+        log!("notify_queue {}", queue);
+
+        let avail_ring = unsafe { &*self.state.borrow().avail_ring.unwrap() };
+        let avail_index = avail_ring.idx - 1;
+        let desc_index = avail_ring.ring[(avail_index % 16) as usize];
+        let desc = unsafe { &*self.state.borrow().descriptors.unwrap().offset(desc_index as isize) };
+        let block_request_header = unsafe { &*(desc.addr as *const BlockRequestHeader) };
+        log!("Request: {:?}", block_request_header);
+
+        // We only handle Read requests
+        if block_request_header.request != 0 {
+            panic!("Refusing to handle request {}", block_request_header.request);
+        }
+    }
+
+    fn read_device_config(&self, offset: u64) -> u32 {
+        log!("read_device_config {}", offset);
+        let result = match offset {
+            0 => self.sector_count() & ((1 << 32) - 1),
+            4 => self.sector_count() >> 32,
+            _ => 0
+        };
+        result as u32
+    }
 }
