@@ -30,7 +30,7 @@ use x86_64::{
 use sha2::Digest;
 use crate::virtio::Error;
 use bitflags::_core::cell::RefCell;
-use crate::block::{AvailRing, UsedRing, Desc, BlockRequestHeader, RequestType};
+use crate::block::{AvailRing, UsedRing, Desc, BlockRequestHeader, RequestType, UsedElem};
 
 #[macro_use]
 mod serial;
@@ -136,7 +136,8 @@ fn boot_from_device(device: &mut block::VirtioBlockDevice, info: &dyn boot::Info
     log!("Found bootloader (BOOTX64.EFI)");
 
     let mut l = pe::Loader::new(&mut file);
-    let load_addr = 0x20_0000;
+    let load_addr = unsafe { (&unused_start as *const u8) as u64 };
+    log!("EFI load address {:p}", load_addr as *const u8);
     let (entry_addr, load_addr, size) = match l.load(load_addr) {
         Ok(load_info) => load_info,
         Err(err) => {
@@ -177,49 +178,47 @@ pub extern "C" fn rust64_start() -> ! {
 fn main(info: &dyn boot::Info) -> ! {
     log!("\nBooting with {}", info.name());
 
-    // Mark UKI range read-only
-
-
-    let uki_ram_slice = unsafe {
-        let start_ptr: *const u8 = &_binary_uki_start;
-        let end_ptr: *const u8 = &_binary_uki_end;
+    let efidisk = unsafe {
+        let start_ptr: *const u8 = &_binary_efidisk_start;
+        let end_ptr: *const u8 = &_binary_efidisk_end;
         let size = end_ptr.offset_from(start_ptr);
         core::slice::from_raw_parts(start_ptr, size as usize)
     };
 
-    paging::mark_read_only(uki_ram_slice);
+    paging::mark_read_only(efidisk);
 
-    log!("Unified kernel image at {:p}: {}", uki_ram_slice.as_ptr(), uki_ram_slice.len());
+    log!("EFI disk at {:p}: {}", efidisk.as_ptr(), efidisk.len());
 
-    // let uki_rom_slice = unsafe {
-    //     let start_ptr: * const u8 = &rom_uki_start;
-    //     let size = uki_ram_slice.len();
+    // let efidisk_rom_slice = unsafe {
+    //     let start_ptr: * const u8 = &rom_efidisk_start;
+    //     let size = efidisk_ram_slice.len();
     //     core::slice::from_raw_parts(start_ptr, size as usize)
     // };
     //
     // unsafe { log!("data location: {:p}", &rom_data_start); }
-    // unsafe { log!("UKI ROM location: {:p}", &rom_uki_start); }
+    // unsafe { log!("UKI ROM location: {:p}", &rom_efidisk_start); }
     // unsafe { log!("pad start: {:p}", &pad_start); }
 
     let mut hasher = sha2::Sha256::default();
-    hasher.update(&uki_ram_slice[0..]);
-    log!("sha256 of RAM uki: {:02X?}", hasher.finalize());
+    hasher.update(&efidisk[0..]);
+    log!("sha256 of RAM efidisk: {:02X?}", hasher.finalize());
 
     //
     // let mut hasher = sha2::Sha256::default();
-    // hasher.update(&uki_rom_slice[0..1024]);
-    // log!("sha256 of ROM uki: {:02X?}", hasher.finalize());
+    // hasher.update(&efidisk_rom_slice[0..1024]);
+    // log!("sha256 of ROM efidisk: {:02X?}", hasher.finalize());
 
-    let mut in_memory_transport = InMemoryVirtioTransport::new(uki_ram_slice);
+    let mut in_memory_transport = InMemoryVirtioTransport::new(efidisk);
     let mut device = block::VirtioBlockDevice::new(&mut in_memory_transport);
     let result = boot_from_device(&mut device, info);
 
-    panic!("Unable to boot from UKI, result {}", result)
+    panic!("Unable to boot from EFI disk, result {}", result)
 }
 
 extern "C" {
-    pub static _binary_uki_start: u8;
-    pub static _binary_uki_end: u8;
+    pub static _binary_efidisk_start: u8;
+    pub static _binary_efidisk_end: u8;
+    pub static unused_start: u8;
 }
 
 struct InMemoryVirtioTransport<'a> {
@@ -257,6 +256,20 @@ impl <'a> InMemoryVirtioTransport<'a> {
 
     fn sector_count(&self) -> usize {
         self.data.len() / 512 + if self.data.len() % 512 > 0 { 1 } else { 0 }
+    }
+
+    fn get_desc(&self, index: u16) -> &Desc {
+        unsafe { &*self.state.borrow().descriptors.unwrap().offset(index as isize) }
+    }
+
+    fn read_sector(&self, sector: usize, buffer: &mut [u8]) -> usize {
+        let start = sector * 512;
+        if start >= self.data.len() {
+            panic!("Sector {} out of range", sector);
+        }
+        let end = core::cmp::min(start + 512, self.data.len());
+        buffer.copy_from_slice(&self.data[start .. end]);
+        end - start
     }
 }
 
@@ -322,19 +335,52 @@ impl <'a> crate::virtio::VirtioTransport for InMemoryVirtioTransport<'a> {
     }
 
     fn notify_queue(&self, queue: u16) {
-        log!("notify_queue {}", queue);
+        // log!("notify_queue {}", queue);
 
         let avail_ring = unsafe { &*self.state.borrow().avail_ring.unwrap() };
-        let avail_index = avail_ring.idx - 1;
-        let desc_index = avail_ring.ring[(avail_index % 16) as usize];
-        let desc = unsafe { &*self.state.borrow().descriptors.unwrap().offset(desc_index as isize) };
-        let block_request_header = unsafe { &*(desc.addr as *const BlockRequestHeader) };
-        log!("Request: {:?}", block_request_header);
+        let avail_index = (avail_ring.idx - 1) % 16;
+        let header_desc_index = avail_ring.ring[avail_index as usize];
+        let header_desc = self.get_desc(header_desc_index);
+        // log!("Header desc: {:?}", header_desc);
+
+        if header_desc.flags & 1 == 0 {
+            panic!("Expected VIRTQ_DESC_F_NEXT flag to be set in header desc");
+        }
+
+        let block_request_header = unsafe { &*(header_desc.addr as *const BlockRequestHeader) };
+        // log!("Block request: {:?}", block_request_header);
 
         // We only handle Read requests
         if block_request_header.request != 0 {
             panic!("Refusing to handle request {}", block_request_header.request);
         }
+
+        let write_buffer_desc_index = header_desc.next;
+        let write_buffer_desc = self.get_desc(write_buffer_desc_index);
+        // log!("Write buffer desc: {:?}", write_buffer_desc);
+        if write_buffer_desc.flags & 1 == 0 {
+            panic!("Expected VIRTQ_DESC_F_NEXT flag to be set in write buffer desc");
+        }
+        if write_buffer_desc.flags & 2 == 0 {
+            panic!("Expected VIRTQ_DESC_F_WRITE flag to be set in write buffer desc");
+        }
+        let write_buffer_ptr = unsafe { &mut *(write_buffer_desc.addr as *mut u8) };
+        // log!("Write buffer at {:p}", write_buffer_desc.addr as *mut u8);
+        let write_buffer_len = write_buffer_desc.length;
+        if write_buffer_len != 512 {
+            panic!("Expected write buffer to be size 512");
+        }
+        let write_buffer = unsafe { core::slice::from_raw_parts_mut(write_buffer_ptr, write_buffer_len as usize) };
+        let read_len = self.read_sector(block_request_header.sector as usize, write_buffer);
+        // log!("Read {} bytes", read_len);
+
+        let used_ring = unsafe { &mut *self.state.borrow().used_ring.unwrap() };
+        // Use same indeces as the avail ring for simplicity
+        used_ring.ring[avail_index as usize] = UsedElem {
+            id: write_buffer_desc_index as u32,
+            len: read_len as u32,
+        };
+        used_ring.idx = avail_ring.idx;
     }
 
     fn read_device_config(&self, offset: u64) -> u32 {

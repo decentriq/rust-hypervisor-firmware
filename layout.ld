@@ -47,7 +47,10 @@ SECTIONS
      Note also that we align at 2M, this is because we're using huge pages
      and want to mark the UKI range read-only
   */
-  .uki : ALIGN(2M) { *(.uki) }
+  .efidisk : ALIGN(2M) { *(.efidisk) }
+
+  . = ALIGN(2M);
+  unused_start = .;
 
   /* Strip symbols from the output binary (comment out to get symbols) */
   /DISCARD/ : {

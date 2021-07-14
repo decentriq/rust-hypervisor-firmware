@@ -33,6 +33,7 @@ pub const STDERR_HANDLE: Handle = &HandleWrapper {
 } as *const _ as Handle;
 
 pub extern "win64" fn stdin_reset(_: *mut SimpleTextInputProtocol, _: Boolean) -> Status {
+    log!("wat wat");
     Status::UNSUPPORTED
 }
 
@@ -40,10 +41,12 @@ pub extern "win64" fn stdin_read_key_stroke(
     _: *mut SimpleTextInputProtocol,
     _: *mut InputKey,
 ) -> Status {
+    log!("wat wat");
     Status::NOT_READY
 }
 
 pub extern "win64" fn stdout_reset(_: *mut SimpleTextOutputProtocol, _: Boolean) -> Status {
+    log!("wat wat");
     Status::SUCCESS
 }
 
@@ -51,6 +54,7 @@ pub extern "win64" fn stdout_output_string(
     _: *mut SimpleTextOutputProtocol,
     message: *mut Char16,
 ) -> Status {
+    log!("wat wat");
     use core::fmt::Write;
     let mut serial = crate::serial::Serial;
     let mut string_end = false;
@@ -79,6 +83,8 @@ pub extern "win64" fn stdout_test_string(
     _: *mut SimpleTextOutputProtocol,
     _: *mut Char16,
 ) -> Status {
+    log!("wat wat");
+
     Status::SUCCESS
 }
 
@@ -88,6 +94,7 @@ pub extern "win64" fn stdout_query_mode(
     columns: *mut usize,
     rows: *mut usize,
 ) -> Status {
+    log!("wat wat");
     if mode == 0 {
         unsafe {
             *columns = 80;
@@ -100,6 +107,7 @@ pub extern "win64" fn stdout_query_mode(
 }
 
 pub extern "win64" fn stdout_set_mode(_: *mut SimpleTextOutputProtocol, mode: usize) -> Status {
+    log!("wat wat");
     if mode == 0 {
         Status::SUCCESS
     } else {
@@ -108,11 +116,13 @@ pub extern "win64" fn stdout_set_mode(_: *mut SimpleTextOutputProtocol, mode: us
 }
 
 pub extern "win64" fn stdout_set_attribute(_: *mut SimpleTextOutputProtocol, _: usize) -> Status {
+    log!("wat wat");
     // Accept all attribute changes but ignore them
     Status::SUCCESS
 }
 
 pub extern "win64" fn stdout_clear_screen(_: *mut SimpleTextOutputProtocol) -> Status {
+    log!("wat wat");
     Status::UNSUPPORTED
 }
 
@@ -121,10 +131,12 @@ pub extern "win64" fn stdout_set_cursor_position(
     _: usize,
     _: usize,
 ) -> Status {
+    log!("wat wat");
     Status::UNSUPPORTED
 }
 
 pub extern "win64" fn stdout_enable_cursor(_: *mut SimpleTextOutputProtocol, _: Boolean) -> Status {
+    log!("wat wat");
     Status::UNSUPPORTED
 }
 

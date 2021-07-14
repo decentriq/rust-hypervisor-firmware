@@ -948,6 +948,7 @@ fn init_heap_allocator(size: usize) {
         0,
     );
     assert!(status == Status::SUCCESS);
+    log!("Heap starts at {:p}", heap_start as *const u8);
     unsafe {
         HEAP_ALLOCATOR.lock().init(heap_start as usize, size);
     }
@@ -1042,6 +1043,7 @@ pub fn efi_exec(
     fs: &crate::fat::Filesystem,
     block: *const crate::block::VirtioBlockDevice,
 ) {
+    log!("efi_exec");
     let vendor_data = 0u32;
     let acpi_rsdp_ptr = info.rsdp_addr();
 
@@ -1100,5 +1102,6 @@ pub fn efi_exec(
     let ptr = address as *const ();
     let code: extern "win64" fn(Handle, *mut efi::SystemTable) -> Status =
         unsafe { core::mem::transmute(ptr) };
+    log!("Jumping into image at address {:p}", ptr);
     (code)((image as *const _) as Handle, &mut *st);
 }

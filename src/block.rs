@@ -291,7 +291,6 @@ impl<'a> VirtioBlockDevice<'a> {
 
 impl<'a> SectorRead for VirtioBlockDevice<'a> {
     fn read(&self, sector: u64, data: &mut [u8]) -> Result<(), Error> {
-        panic!("read sector: {}", sector);
         self.request(sector, Some(data), RequestType::Read)
     }
 }
