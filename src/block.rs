@@ -61,7 +61,7 @@ pub struct UsedElem {
 #[repr(align(64))]
 /// Device driver for virtio block over any transport
 pub struct VirtioBlockDevice<'a> {
-    transport: &'a mut dyn VirtioTransport,
+    pub transport: &'a mut dyn VirtioTransport,
     state: RefCell<DriverState>,
 }
 

@@ -178,16 +178,26 @@ pub extern "C" fn rust64_start() -> ! {
 fn main(info: &dyn boot::Info) -> ! {
     log!("\nBooting with {}", info.name());
 
-    let efidisk = unsafe {
+    let initial_efidisk = unsafe {
         let start_ptr: *const u8 = &_binary_efidisk_start;
         let end_ptr: *const u8 = &_binary_efidisk_end;
         let size = end_ptr.offset_from(start_ptr);
         core::slice::from_raw_parts(start_ptr, size as usize)
     };
 
-    paging::mark_read_only(efidisk);
+    let new_address = (1024 as usize * (1 << 20)) as * mut u8;
+    let efidisk = unsafe {
+        let start_ptr: *mut u8 = new_address;
+        let size = initial_efidisk.len();
+        core::slice::from_raw_parts_mut(start_ptr, size as usize)
+    };
+    log!("Relocating EFI disk from {:p} to {:p}, size {}", initial_efidisk, efidisk, initial_efidisk.len());
+    efidisk.copy_from_slice(initial_efidisk);
+
+    // let efidisk = initial_efidisk;
 
     log!("EFI disk at {:p}: {}", efidisk.as_ptr(), efidisk.len());
+    paging::mark_read_only(efidisk);
 
     // let efidisk_rom_slice = unsafe {
     //     let start_ptr: * const u8 = &rom_efidisk_start;
@@ -208,6 +218,14 @@ fn main(info: &dyn boot::Info) -> ! {
     // hasher.update(&efidisk_rom_slice[0..1024]);
     // log!("sha256 of ROM efidisk: {:02X?}", hasher.finalize());
 
+    let magic_range = unsafe {
+        let start_ptr: *mut u8 = &mut magic_debug;
+        let size = 2 * 1024 * 1024;
+        core::slice::from_raw_parts_mut(start_ptr, size as usize)
+    };
+
+    magic_range[0..8].copy_from_slice(&(__debug_log as usize).to_le_bytes());
+
     let mut in_memory_transport = InMemoryVirtioTransport::new(efidisk);
     let mut device = block::VirtioBlockDevice::new(&mut in_memory_transport);
     let result = boot_from_device(&mut device, info);
@@ -215,18 +233,31 @@ fn main(info: &dyn boot::Info) -> ! {
     panic!("Unable to boot from EFI disk, result {}", result)
 }
 
+unsafe fn __debug_log(data: u8) {
+    // let mut len = 0;
+    // while *data.offset(len) != 0 {
+    //     len += 1;
+    // }
+    // log!("{:x?}", core::slice::from_raw_parts(data, 16));
+    // let slice = core::slice::from_raw_parts(data, len as usize);
+    // log!("EFI __debug: {}", core::str::from_utf8_unchecked(slice));
+    log!("EFI __debug: {}", data);
+}
+
 extern "C" {
     pub static _binary_efidisk_start: u8;
     pub static _binary_efidisk_end: u8;
     pub static unused_start: u8;
+    pub static mut magic_debug: u8;
 }
 
-struct InMemoryVirtioTransport<'a> {
+pub struct InMemoryVirtioTransport<'a> {
     data: &'a [u8],
     state: RefCell<InMemoryVirtioTransportState>,
 }
 
 struct InMemoryVirtioTransportState {
+    disabled: bool,
     status: u32,
     features: u64,
     descriptors: Option<* const Desc>,
@@ -237,6 +268,7 @@ struct InMemoryVirtioTransportState {
 impl Default for InMemoryVirtioTransportState {
     fn default() -> Self {
         Self {
+            disabled: false,
             status: 0,
             features: 1 << 32,
             descriptors: None,
@@ -270,6 +302,10 @@ impl <'a> InMemoryVirtioTransport<'a> {
         let end = core::cmp::min(start + 512, self.data.len());
         buffer.copy_from_slice(&self.data[start .. end]);
         end - start
+    }
+
+    fn disable(&self) {
+        self.state.borrow_mut().disabled = true;
     }
 }
 
@@ -335,6 +371,9 @@ impl <'a> crate::virtio::VirtioTransport for InMemoryVirtioTransport<'a> {
     }
 
     fn notify_queue(&self, queue: u16) {
+        if self.state.borrow().disabled {
+            panic!("memfs virtio transport disabled");
+        }
         // log!("notify_queue {}", queue);
 
         let avail_ring = unsafe { &*self.state.borrow().avail_ring.unwrap() };

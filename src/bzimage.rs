@@ -87,7 +87,15 @@ impl Kernel {
         let mut option_addr = None;
         for i in 0..self.0.num_entries() {
             let entry = self.0.entry(i);
+            log!("entry[{}] = {:?}", i, entry);
+        }
+        for i in 0..self.0.num_entries() {
+            let entry = self.0.entry(i);
             if entry.entry_type != E820Entry::RAM_TYPE {
+                continue;
+            }
+            log!("entry {:?}, size {}", entry, size);
+            if size > entry.size {
                 continue;
             }
             let addr = entry.addr + entry.size - size;
